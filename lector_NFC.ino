@@ -1,5 +1,5 @@
   // incluir las librerias para la lectura de NFC 
-  // #include <Wire.h>
+  #include <Wire.h>
   #include <PN532_I2C.h>
   #include <PN532.h>
   #include <NfcAdapter.h>
