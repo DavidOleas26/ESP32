@@ -10,8 +10,8 @@
 #include <ArduinoJson.h>
 
 //Variables para conexion con el servidor
-const char *ssid = "NETLIFE-Andres Balarezo";          //NETLIFE-Andres Balarezo, ROYAL HUB
-const char *password = "1003410675";  //1003410675, 11_royalhub2023
+const char *ssid = "NETLIFE-Andres Balarezo";  //NETLIFE-Andres Balarezo, ROYAL HUB
+const char *password = "1003410675";           //1003410675, 11_royalhub2023
 const char *apiUrl = "https://apitest.proatek.com/public/api/maquinas/beer/activar";
 const char *apiUrlSensor = "https://apitest.proatek.com/public/api/sensor/beer/escanear";
 const char *apiUrlVolumen = "https://apitest.proatek.com/public/api/sensor/maquina/venta";
@@ -20,32 +20,32 @@ const char *apiUrlVolumen = "https://apitest.proatek.com/public/api/sensor/maqui
 PN532_I2C pn532i2c(Wire);
 PN532 nfc(pn532i2c);
 
-//Variables para control rele
+//Puerto de salida para control rele
 const int control = 18;
 
 // Variables control flujometro
 const int sensorPin = 33;
-const int measureInterval = 500;
+const unsigned long measureInterval = 500UL;
 volatile int pulseConter;
 const float factorK = 7.663;  //8.363
 
 //Variables calculo volumen
 float volumen = 0;
-long t0 = 0;  //millis() del bucle anterior
+unsigned long t0 = 0;  //millis() del bucle anterior
+unsigned long dt = 0;
 
 // variables para el control del tiempo de espera
 unsigned long previousMillis = 0;            // Almacena el tiempo anterior
-const long interval = 5000;                  // Intervalo de tiempo en milisegundos (5 segundos)
+const unsigned long interval = 5000UL;       // Intervalo de tiempo en milisegundos (5 segundos)
 unsigned long tiempoInicioTemporizador = 0;  // Variable para almacenar el tiempo de inicio del temporizador
 
 //Funcion para contar los pulsos sel flujometro
-void ISRCountPulse() {
+void IRAM_ATTR CountPulse() {
   pulseConter++;
 }
 
 //Funcion para obtener la frecuancia del flujometro
 float GetFrequency() {
-  //t0=millis();
   pulseConter = 0;
   unsigned long startTime = millis();  // Registra el tiempo de inicio
   while (millis() - startTime < measureInterval) {
@@ -54,24 +54,19 @@ float GetFrequency() {
   noInterrupts();                                    // Deshabilita las interrupciones
   unsigned long elapsedTime = millis() - startTime;  // Calcula el tiempo transcurrido
   interrupts();                                      // Habilita las interrupciones nuevamente
-  return (float)pulseConter*1000/elapsedTime; //return (float)pulseConter * 1000 / elapsedTime;
+  return (float)pulseConter * 1000 / elapsedTime;    //return (float)pulseConter * 1000 / elapsedTime;
 }
 
-float getvolume(float frequency, long dt) {
+float getvolume(float frequency) {
   float caudal = frequency / factorK;
-  t0 = millis() - dt;                               //calculamos la variación de tiempo
-  volumen = volumen + ((caudal / 60) * (t0)/1000);  // volumen(L)=caudal(L/s)*tiempo(s) (dt/1000)
-  //    t0=millis();
-  //    volumen += caudal / 60 * (millis() - t0) ;/// 1000.0;
-  //    t0 = millis();
+  t0 = millis() - dt;                                   //calculamos la variación de tiempo
+  volumen = volumen + (((caudal / 60) * (t0)) / 1000);  // volumen(L)=caudal(L/s)*tiempo(s) (dt/1000)
   return volumen;
 }
 
 // Funcion para imprimir la direccion de la tarjeta NFC
 void imprimirValores(uint8_t uid[], uint8_t uidLength) {
   Serial.println("Found a card!");
-  //Serial.print("UID Length: ");Serial.print(uidLength, DEC);Serial.println(" bytes");
-  //Serial.print("UID Value: ");
   for (uint8_t i = 0; i < uidLength; i++) {
     Serial.print("");
     Serial.print(uid[i]);
@@ -79,20 +74,35 @@ void imprimirValores(uint8_t uid[], uint8_t uidLength) {
   Serial.println("");
 }
 
+void ConnectWiFi() {
+  //Inicializa el objeto wifi y conecta a internet
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+  Serial.println("Connecting to WIFI");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.println("Conectando a WiFi...");
+  }
+  Serial.println("Conectado a la red WiFi");
+}
+
 void setup() {
   // iniciar velocidad a 115200
   Serial.begin(115200);
 
-  // Conéctate a la red WiFi
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(1000);
-    Serial.println("Conectando a WiFi...");
-  }
-  Serial.println("Conectado a la red WiFi");
+  //Asignamos el pin del flujometro como interrupcion
+  pinMode(sensorPin, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(sensorPin), CountPulse, RISING);
+
+  // Declaramos el pin de control del rele con un pin de salida OUTPUT
+  pinMode(control, OUTPUT);
+  digitalWrite(control, HIGH);
+
+  //Funcion para conectar al internet
+  ConnectWiFi();
 
   // Crea un objeto JSON
-  DynamicJsonDocument jsonDocument(200);
+  StaticJsonDocument<32> jsonDocument;
   jsonDocument["id_maquina"] = 1;
   jsonDocument["estado"] = 1;
 
@@ -100,25 +110,19 @@ void setup() {
   String postData;
   serializeJson(jsonDocument, postData);
 
-  // Realiza la solicitud HTTP POST
   HTTPClient http;
   http.begin(apiUrl);
   http.addHeader("Content-Type", "application/json");  // Usar application/json para JSON
 
   int httpCode = http.POST(postData);
+  String payload = http.getString();
 
-  // Maneja la respuesta del servidor
   if (httpCode > 0) {
-    String payload = http.getString();
-    Serial.println("Código de respuesta: " + String(httpCode));
-    Serial.println("Respuesta del servidor: " + httpCode);
-    if (httpCode == 201) {
-      // Declaramos el pin de control del rele con un pin de salida OUTPUT
-      pinMode(control, OUTPUT);
-      digitalWrite(control, HIGH);
 
-      //Asignamos el pin del flujometro como interrupcion
-      attachInterrupt(digitalPinToInterrupt(sensorPin), ISRCountPulse, RISING);
+    http.end();
+    Serial.println("Código de respuesta: " + String(httpCode));  //String(httpCode)
+
+    if (httpCode == 201) {
 
       //Validacion para verificar que le modulo NFC este concetado y funcionando correctamente
       nfc.begin();
@@ -126,22 +130,23 @@ void setup() {
       if (!versiondata) {
         Serial.print("Didn't find PN53x board");
         // Crea un objeto JSON
-        DynamicJsonDocument jsonDocument1(200);
+        StaticJsonDocument<32> jsonDocument1;
         jsonDocument1["id_maquina"] = 1;
         jsonDocument1["estado"] = 3;
 
         // Convierte el objeto JSON a una cadena
-        String postData;
-        serializeJson(jsonDocument1, postData);
+        String postData1;
+        serializeJson(jsonDocument1, postData1);
 
-        HTTPClient http;
+        //HTTPClient http;
         http.begin(apiUrl);
         http.addHeader("Content-Type", "application/json");  // Usar application/json para JSON
 
-        int httpCode = http.POST(postData);
+        int httpCode = http.POST(postData1);
         String payload = http.getString();
+        http.end();
         Serial.println("Código de respuesta: " + String(httpCode));
-        Serial.println("Respuesta del servidor: " + httpCode);
+        Serial.println("Respuesta del servidor: " + payload);
         while (1)
           ;  // halt
       }
@@ -152,27 +157,23 @@ void setup() {
       // configure board to read RFID tags
       nfc.SAMConfig();
       Serial.println("Waiting for an ISO14443A card");
-
-      //medicion de tiempo para calcular volumen
-      //t0 = millis();
     }
   } else {
+    http.end();
     Serial.println("Código de respuesta: " + String(httpCode));
-    Serial.println("Respuesta del servidor: " + httpCode);
+    Serial.println("Respuesta del servidor: " + payload);
     Serial.println("Error en la solicitud HTTP");
   }
-  http.end();
 }
 
 void loop() {
 
   //Variable para el control de la frecuencia del flujometro
   float frequency = 0;
-  long dt = 0;  //variación de tiempo por cada bucle
 
   //variables banderas estado flujometro
   boolean estadoflujo;
-  boolean ingresar= false;
+  boolean ingresar = false;
 
   //variables cambio de estado switch
   int estado = 0;
@@ -188,13 +189,13 @@ void loop() {
   if (success) {
     imprimirValores(uid, uidLength);
     //Enviar id_maquina y codigo_sensor al back para procesar
-    // Crea un objeto JSON
-    DynamicJsonDocument jsonDocument2(200);
-    jsonDocument2["id_maquina"] = 1;
     String cadenaResultado = "";
     for (int i = 0; i < uidLength; i++) {
       cadenaResultado += String(uid[i]);
     }
+    // Crea un objeto JSON
+    StaticJsonDocument<200> jsonDocument2;
+    jsonDocument2["id_maquina"] = 1;
     jsonDocument2["codigo_sensor"] = cadenaResultado;
 
     // Convierte el objeto JSON a una cadena
@@ -212,8 +213,9 @@ void loop() {
     //Maneja la respuesta del servidor
     if (httpCode > 0) {
       String response = http.getString();
+      http.end();
       Serial.println(response);
-      Serial.println("Código de respuesta: " + String("") + httpCode);
+      Serial.println("Código de respuesta: " + String(httpCode));
 
       switch (httpCode) {
         case 202:
@@ -229,10 +231,12 @@ void loop() {
       //Activar el rele cuando se haya leido una tarjeta NFC
       digitalWrite(control, LOW);
       Serial.println("Rele activado");
+      Serial.println(ingresar);
     } else {
       String payload = http.getString();
+      http.end();
       Serial.println("Código de respuesta: " + String(httpCode));
-      Serial.println("Respuesta del servidor: " + httpCode);
+      Serial.println("Respuesta del servidor: " + payload);
     }
 
   } else {
@@ -240,28 +244,21 @@ void loop() {
     Serial.println("Timed out waiting for a card");
   }
 
-  //    frequency = GetFrequency();
-  //    Serial.print(frequency); Serial.println(" HZ");
   //lazo  de control de estados de la maquina
   while (ingresar) {
     Serial.println("Loop While");
     // Realizar una lectura inicial del flujometro
     frequency = GetFrequency();
     frequency = 0;
-    //Serial.print(frequency); Serial.println(" HZ");
-    //volumen = getvolume(frequency);
-    //Serial.print(volumen); Serial.println(" L");
 
     //Switch case para manejar los estados de la maquina
     switch (estado) {
-      case 0:
 
+      case 0:
         Serial.println("CASE 0");
         dt = millis();
         frequency = GetFrequency();
-        //dt = millis();
-        volumen = getvolume(frequency, dt);
-        //Serial.print(frequency); Serial.println(" HZ");
+        volumen = getvolume(frequency);
 
         if (frequency != 0) {
           estadoflujo = true;
@@ -275,7 +272,7 @@ void loop() {
           dt = millis();
           frequency = GetFrequency();
           //dt = millis();
-          volumen = getvolume(frequency, dt);
+          volumen = getvolume(frequency);
           //Serial.println(" estadoflujo==true CASE 0");
           if (frequency != 0) {
             estadoflujo = true;
@@ -285,22 +282,19 @@ void loop() {
             //Serial.println("frecuencia igual a cero while estado flujo verdadero, CASE 0");
             estado = 1;
           }
-          Serial.print(frequency);
-          Serial.println(" HZ");
-          Serial.print(volumen);
-          Serial.println(" L");
+          Serial.print(frequency); Serial.println(" HZ");
+          Serial.print(volumen); Serial.println(" L");
         }
         break;
 
       case 1:
-
         Serial.println("CASE 1");
         while (estadoflujo == false) {
           //Serial.println("WHILE estado flujo == false, CASE 1");
           dt = millis();
           frequency = GetFrequency();
           //dt = millis();
-          volumen = getvolume(frequency, dt);
+          volumen = getvolume(frequency);
           //Serial.print(frequency); Serial.println(" HZ");
 
           if (frequency == 0) {
@@ -325,10 +319,8 @@ void loop() {
             estado = 0;
             tiempoInicioTemporizador = 0;  // Reiniciar el temporizador
           }
-          Serial.print(frequency);
-          Serial.println(" HZ");
-          Serial.print(volumen);
-          Serial.println(" L");
+          Serial.print(frequency); Serial.println(" HZ");
+          Serial.print(volumen); Serial.println(" L");
         }
 
         break;
@@ -359,9 +351,7 @@ void loop() {
         int httpCode = http.POST(postData1);
         String payload = http.getString();
         Serial.println("Código de respuesta: " + String(httpCode));
-        Serial.println("Respuesta del servidor: " + httpCode);
-
-        //
+        Serial.println("Respuesta del servidor: " + payload);
 
         volumen = 0;
         frequency = 0;
