@@ -110,6 +110,7 @@ void setup() {
   String postData;
   serializeJson(jsonDocument, postData);
 
+  //String datos_enviar = "?id_maquina=" + String(1) + "&estado=" + String(1);
   HTTPClient http;
   http.begin(apiUrl);
   http.addHeader("Content-Type", "application/json");  // Usar application/json para JSON
