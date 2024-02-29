@@ -1,0 +1,227 @@
+//Librerías conexion internet, petición HTTP
+#include <WiFi.h>
+#include <HTTPClient.h>
+// incluir las librerias para la lectura de NFC
+#include <Wire.h>
+#include <PN532_I2C.h>
+#include <PN532.h>
+#include <NfcAdapter.h>
+#include <Arduino.h>
+
+//Variables para conexion con el servidor
+const char *ssid = "NETLIFE-Andres Balarezo";  //NETLIFE-Andres Balarezo, ROYAL HUB
+const char *password = "1003410675";           //1003410675, 11_royalhub2023
+const char *apiUrl = "http://192.168.100.43:8000/api/maquinas/beer/activar?id_maquina=66eed425-3d7f-4d12-899d-867b2c9c4308&estado=";
+const char *apiUrlSensor = "http://192.168.100.43:8000/api/sensor/beer/escanear?id_maquina=66eed425-3d7f-4d12-899d-867b2c9c4308&codigo_sensor=";
+
+//objeto de la libreria NFC
+PN532_I2C pn532i2c(Wire);
+PN532 nfc(pn532i2c);
+
+//Medición de tiempo espera conexion internet (1 minuto de espera)
+const unsigned long timewifi = 60000UL;
+
+//Medición de tiempo lectura sensor nfc
+const unsigned long timeInterval = 30000UL;
+
+//Medición de tiempo espera Peticion GET APIUrl (2 minutos de espera)
+const unsigned long timeApiurl = 120000UL;
+
+//Medición de tiempo espera Peticion GET APIUrlSensor (10 segundos de espera)
+const unsigned long timeApiurlSensor = 10000UL;
+
+//Función para conectar al WiFi
+void ConnectWiFi() {
+  //Inicializa el objeto wifi y conecta a internet
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+  Serial.println("Connecting to WIFI");
+
+  unsigned long startTime = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startTime < timewifi) {
+    delay(500);
+    Serial.println("Conectando a WiFi...");
+  }
+
+  //si pasado el minuto no logro conectarse entra a un loop infinito mostrando un mensaje de error
+  if (millis() - startTime >= timewifi) {
+    //tft.fillScreen(TFT_BLACK);
+    //    tft.drawString("Error conexion", 10, 45);
+    while (true) {
+      //tft.pushImage(128, 25, 64, 64, NoWifi);
+      //tft.drawString("Error conexion", 65, 95, 4);
+      Serial.println("Error conexion internet");
+    }
+  }
+
+  Serial.println("Conectado a la red WiFi");
+}
+
+//Función para enviar peticiones para conectarse al servidor
+//se tiene que enviar el id_maquina y el estado
+int ConnectApiUrl(uint32_t versiondata) {
+
+  //acatualización de estado si la lectura del sensor NFC fue satisafactoria
+  String estado;
+  if (!versiondata ) {
+    estado = "2";
+  } else {
+    estado = "1";
+  }
+
+  //Concatenar la url de la API con el estado
+  String urlConcatenada = apiUrl + estado;
+
+  // Imprime la URL concatenada
+  Serial.println(urlConcatenada);
+
+  //Enviar petición HTTP Get
+  HTTPClient http;
+  http.begin(urlConcatenada);
+  int httpCode = http.GET();
+
+  //en caso de falla de peticion GET vuelve a intentar conectarse por 1 y 30 minuto
+  unsigned long startTime = millis();
+  while (httpCode != 201 && millis() - startTime < timeApiurl) {
+    //tft.pushImage(128, 25, 64, 64, Load);
+    httpCode = http.GET();
+    Serial.println("Código de respuesta: " + String(httpCode));
+    //tft.drawString("R: " + String(httpCode), 10, 65);
+  }
+
+  String response = http.getString();
+
+  //si pasado 1 y 30 mintuos no logro conectarse entra a un loop infinito mostrando un mensaje de error
+  if (millis() - startTime >= timeApiurl) {
+    http.end();
+    //tft.fillScreen(TFT_BLACK);
+    //    tft.drawString("Error peticion GET", 10, 45);
+    while (true) {
+      //tft.pushImage(128, 25, 64, 64, imgError);
+      //tft.drawString("Error peticion", 65, 95, 4);
+      Serial.println("Error peticion: " + String(httpCode));
+      Serial.println(response);
+      //tft.drawString("Error peticion GET ", 10, 45);
+      //tft.drawString(response, 10, 55);
+      //Serial.println("Código de respuesta: " + String(httpCode));
+      //tft.drawString("R: " + String(httpCode), 10, 65);
+    }
+  }
+
+  if (estado == "2") {
+    http.end();
+    //tft.fillScreen(TFT_BLACK);
+    while (true) {
+      //tft.drawString("Maquina en mantenimiento", 10, 45);
+      //tft.pushImage(128, 25, 64, 64, imgMant);
+      //tft.drawString("Maquina en mantenimiento", 5, 95, 4);
+      Serial.println("Maquina en mantenimiento");
+
+    }
+  }
+
+  //Serial.println(response);
+  //tft.drawString(response, 10, 75);
+  http.end();
+  //Serial.println("Código de respuesta: " + String(httpCode));
+  //tft.drawString("R: " + String(httpCode), 10, 85);
+  Serial.println("Código de respuesta: " + String(httpCode));
+  return httpCode;
+
+}
+
+void setup() {
+
+  // iniciar velocidad a 115200
+  Serial.begin(115200);
+
+  //Inicialización del sendor NFC, si sensor no se inicializa se espera 30 seg
+  //esperando incializacion, si no se envia en la peticion GET estado mantenimiento
+  nfc.begin();
+  uint32_t versiondata = nfc.getFirmwareVersion();
+  unsigned long startTime = millis();
+  while (millis() - startTime < timeInterval && versiondata == 0 ) {
+    versiondata = nfc.getFirmwareVersion();
+  }
+  Serial.println("1: " + String(versiondata));
+  if (versiondata != 0) {
+    nfc.setPassiveActivationRetries(0xFF);
+    nfc.SAMConfig();
+    Serial.println("1: " + String(versiondata));
+    Serial.println("Waiting for an ISO14443A card");
+    //tft.drawString("Waiting for an ISO14443A card", 10, 15);
+  }
+
+  //Conexión WIFI
+  ConnectWiFi();
+  //Llamada a la función para realizar peticiones de conexion al servidor
+  int httpCode = ConnectApiUrl(versiondata);
+
+}
+
+void loop () {
+
+  //variables banderas estado para casos de funcionamiento
+  boolean estadoflujo;
+  boolean ingresar = false;
+
+  //variables cambio de estado switch casos de funcionamiento
+  int estado = 0;
+
+  //variables para guardar la dirrecion de las tarjetas NFC
+  boolean success;
+  uint8_t uid[] = { 0, 0, 0, 0, 0, 0, 0 };  // Buffer to store the returned UID
+  uint8_t uidLength;                        // Length of the UID (4 or 7 bytes depending on ISO14443A card type)
+  //Wait for an ISO14443A type cards (Mifare, etc.). When one is found, 'uid' will be populated with the UID, and uidLength will indicate, if the uid is 4 bytes (Mifare Classic) or 7 bytes (Mifare Ultralight)
+  success = nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, &uid[0], &uidLength);
+
+  // Verificación de lectura de pulsera NFC
+  if (success) {
+
+    //Guardar la cadena de la direccion del sensor en una variable
+    //imprimirValores(uid, uidLength);
+    //Enviar id_maquina y codigo_sensor al back para procesar
+    String cadenaResultado = "";
+    for (int i = 0; i < uidLength; i++) {
+      cadenaResultado += String(uid[i]);
+    }
+
+    //Concateno el condigo de sensor a la api
+    String urlConcatenada = apiUrlSensor + cadenaResultado;
+
+    Serial.println(urlConcatenada);
+
+    //envio la peticion get para ingresar el codigo de sensor
+    HTTPClient http;
+    http.begin(urlConcatenada);
+    int httpCode = http.GET();
+
+    //medicion de tiempo de espera en caso de que la peticion falle ApiUrlSensor (15 segundos de espera)
+    unsigned long startTime = millis();
+    while (httpCode < 0 && millis() - startTime < timeApiurlSensor ) {
+      httpCode = http.GET();
+      //tft.drawString(String(httpCode), 10, 15);
+      Serial.println("Error: " + String(httpCode));
+    }
+
+    //Si el código de respuesta es positivo obtengo la respuesta del servidor
+    if (httpCode > 0) {
+
+      //Obtego la respuesta del servidor en string
+      Serial.println("Código de respuesta: " + String(httpCode));
+      String response = http.getString();
+      http.end();
+      Serial.println(response);
+
+    } else {
+      //*MENSAJE DE ERROR ENVIO DE PETICION DE LA PULSERA
+      http.end();
+      Serial.println("Código de respuesta error: " + String(httpCode));
+      Serial.println("Coloque nuevamente la pulsera");
+    }
+  } else {
+    // Nensaje de espera para esperar lectura de pulsera
+    Serial.println("Timed out waiting for a card");
+  }
+
+}
